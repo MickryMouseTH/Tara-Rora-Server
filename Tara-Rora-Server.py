@@ -11,7 +11,7 @@ import base64                            # Import base64 for decoding payload da
 
 
 # ----------------------- Configuration Values -----------------------
-Program_Name = "Rabbit-Recever-Server"  # Declare the program name (used for display and log file naming)
+Program_Name = "Tara-Rora-Server"  # Declare the program name (used for display and log file naming)
 Program_Version = "1.1"          # Declare the program version (used in log file name)
 # ---------------------------------------------------------------------
 
