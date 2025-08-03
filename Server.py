@@ -12,116 +12,95 @@ import base64                            # Import base64 for decoding payload da
 
 # ----------------------- Configuration Values -----------------------
 Program_Name = "Rabbit-Recever-Server"  # Declare the program name (used for display and log file naming)
-Program_Version = "1.0"          # Declare the program version (used in log file name)
+Program_Version = "1.1"          # Declare the program version (used in log file name)
 # ---------------------------------------------------------------------
 
 CPU_COUNT = os.cpu_count() or 1  # Check the number of CPU cores in the system (use 1 if unavailable)
 executor = concurrent.futures.ThreadPoolExecutor(max_workers=CPU_COUNT)  # Create ThreadPoolExecutor for parallel tasks (not used in this file)
 
-def Load_Config():
+default_config = {
+    "DB_config":{                           # MySQL configuration
+        "mysql_host":"",                    # MySQL host address
+        "mysql_port": 3306,                 # Default MySQL port
+        "mysql_user":"",                    # MySQL username
+        "mysql_Pass":"",                    # MySQL password
+        "mysql_database":"",                # MySQL database name
+    },
+    "RabbitMQ_config":{                     # RabbitMQ configuration
+        "mq_host": "",                      # RabbitMQ host address
+        "mq_port": 5672,                    # RabbitMQ port (default is 5672)
+        "mq_user": "",                      # RabbitMQ username
+        "mq_pass": "",                      # RabbitMQ password
+        "mq_virtual_host": "",              # RabbitMQ virtual host
+        "mq_queue_name": "",                # Queue name to receive messages
+        "retry_mq": 30,                     # Wait time (seconds) before retrying MQ connection
+    },
+    "log_Level": "DEBUG",                   # Log level
+    "Log_Console_Enable": 1,                # Display log in console or not (1=show, 0=do not show)
+    "log_Backup": 90,                       # Number of days to keep logs before deleting
+    "Log_Size": "10 MB"                     # Maximum log file size per file
+}
+# ----------------------- Load Configuration -----------------------
+def Load_Config(default_config, Program_Name):
     """
-    Function to load config from 'config.json'.
-    - If the config file does not exist, it will create 'config.json' with default values.
-    - Sets up initial logger (logs to file).
-    - Returns the config as a dict.
+    Load configuration from JSON file. If the file does not exist, create it with default values.
     """
-    logger.remove()  # Remove all previous logger handlers
-    log_dir = "logs"  # Specify the folder name for log storage
-    os.makedirs(log_dir, exist_ok=True)  # Create the log folder if it does not exist
+    config_file_path = f'{Program_Name}.config.json'
 
-    log_file_name = f'{Program_Name}_{Program_Version}.log'  # Set log file name
-    log_file = os.path.join(log_dir, log_file_name)          # Full path of log file
+    # Create config file with default values if it does not exist.
+    if not os.path.exists(config_file_path):
+        default_config = default_config 
+        with open(config_file_path, 'w') as new_config_file:
+            json.dump(default_config, new_config_file, indent=4)
 
-    logger.debug(f"Creating log file at: {log_file}")  # Log the path of the log file
-    logger.add(
-        log_file,
-        format="{time} | {level} | {thread.id} | {function} | {message}"
-    )  # Add handler for logging to file
-
-    logger.info('-' * 117)  # Log separator line
-    logger.info(f"Start {Program_Name} Version {Program_Version}")  # Log program start info
-    logger.info('-' * 117)  # Log separator line
-
-    # If config.json does not exist, create config.json with default values
-    if not os.path.exists('config.json'):
-        default_config = {
-            "DB_config":{                           # MySQL configuration
-                "mysql_host":"",                    # MySQL host address
-                "mysql_port": 3306,                 # Default MySQL port
-                "mysql_user":"",                    # MySQL username
-                "mysql_Pass":"",                    # MySQL password
-                "mysql_database":"",                # MySQL database name
-            },
-            "RabbitMQ_config":{                     # RabbitMQ configuration
-                "mq_host": "",                      # RabbitMQ host address
-                "mq_port": 5672,                    # RabbitMQ port (default is 5672)
-                "mq_user": "",                      # RabbitMQ username
-                "mq_pass": "",                      # RabbitMQ password
-                "mq_virtual_host": "",              # RabbitMQ virtual host
-                "mq_queue_name": "",                # Queue name to receive messages
-                "retry_mq": 30,                     # Wait time (seconds) before retrying MQ connection
-            },
-            "log_Level": "DEBUG",               # Log level
-            "Log_Console": 1,                   # Display log in console or not (1=show, 0=do not show)
-            "log_Backup": 90,                   # Number of days to keep logs before deleting
-            "Log_Size": "10 MB"                 # Maximum log file size per file
-        }
-        logger.debug(f"Default config: {default_config}")  # Log default config values
-        with open('config.json', 'w') as new_config_file:
-            json.dump(default_config, new_config_file, indent=4)  # Create config.json file
-        logger.info("Created default config.json file.")  # Log creation of config file
-
-    try:
-        logger.debug(f"Checking for config.json at path: {os.path.abspath('config.json')}")  # Log config file path
-        with open('config.json', 'r') as config_file:
-            config = json.load(config_file)  # Load config from file
-        logger.info("Configuration loaded successfully.")  # Log successful config load
-        logger.debug(f"Loaded config values: {config}")   # Log loaded config values
-    except Exception as e:
-        logger.exception(f'Load Config Error: {e}')  # Log config load error
-        config = {}
+    # Load configuration from file
+    with open(config_file_path, 'r') as config_file:
+        config = json.load(config_file)
+    
     return config
 
-config = Load_Config()  # Load config and store in global variable
-
-def Loguru_Logging():
+# ----------------------- Loguru Logging Setup -----------------------
+def Loguru_Logging(config, Program_Name, Program_Version):
     """
-    Function to configure Loguru logger based on config values.
-    - Set log file rotation, backup, compression, and log to console (if enabled).
+    Set up Loguru logging based on configuration.
     """
-    logger.remove()  # Remove all previous logger handlers
+    logger.remove()
 
-    log_Backup = int(config.get('log_Backup', 90))    # Number of days to keep logs
-    Log_Size = config.get('Log_Size', "10 MB")        # Maximum log file size
-    log_Level = config.get('log_Level', "DEBUG")      # Log level
+    log_Backup = int(config.get('log_Backup', 90))  # Default to 90 days if not set
+    if log_Backup < 1:  # Ensure log retention is at least 1 day
+        log_Backup = 1
+    Log_Size = config.get('Log_Size', '10 MB')  # Default to 10 MB if not set
+    log_Level = config.get('log_Level', 'DEBUG').upper()  # Default to DEBUG if not set
 
-    logger.debug(f"Log Level: {log_Level}, Log Size: {Log_Size}, Backup Days: {log_Backup}")  # Log configuration values
+    log_dir = "logs"
+    os.makedirs(log_dir, exist_ok=True)
 
-    log_dir = "logs"                                  # Log directory
-    os.makedirs(log_dir, exist_ok=True)               # Create log directory if it does not exist
+    log_file_name = f'{Program_Name}_{Program_Version}.log'
+    log_file = os.path.join(log_dir, log_file_name)
 
-    log_file_name = f'{Program_Name}_{Program_Version}.log'     # Log file name
-    log_file = os.path.join(log_dir, log_file_name)             # Log file path
-    logger.debug(f"Log file path: {log_file}")                  # Log file path
-
-    # If set to display log in console
-    if config.get('Log_Console', '0') == 1:
+    # Enable console logging if configured
+    if config.get('Log_Console_Enable', 0) == 1:
         logger.add(
             sys.stdout, 
             level=log_Level, 
             format="<green>{time}</green> | <blue>{level}</blue> | <cyan>{thread.id}</cyan> | <magenta>{function}</magenta> | {message}"
-        )  # Add handler for log to stdout (console)
+        )
 
+    # Add file logging with rotation and retention
     logger.add(
         log_file,
         format="{time} | {level} | {thread.id} | {function} | {message}",
         level=log_Level,
         rotation=Log_Size,
         retention=log_Backup,
-        compression="zip",
-        enqueue=True
-    )  # Add handler for logging to file with rotation and compression settings
-    logger.info("Logging configuration set up successfully.")  # Log successful logger setup
+        compression="zip"
+    )
+
+    logger.info('-' * 117)
+    logger.info(f"Start {Program_Name} Version {Program_Version}")
+    logger.info('-' * 117)
+
+    return logger
 
 def callback(ch, method, properties, body):
     """
@@ -512,6 +491,9 @@ def decode_hex_payload(hex_str):
 
     return result  # Return result dict
 
+global config  # Declare global config variable to be used in multiple functions
+config = None  # Initialize config variable
+
 def main():
     """
     Main function
@@ -520,7 +502,26 @@ def main():
     - Contains a loop for automatic reconnection on error
     - Supports KeyboardInterrupt to stop the program
     """
-    Loguru_Logging()  # Call function to configure logger
+    try:
+        config = Load_Config(default_config, Program_Name)  # Load configuration
+        logger = Loguru_Logging(config, Program_Name, Program_Version)  # Set up logging
+        logger.info("Configuration loaded successfully.")  # Log successful config load
+    except FileNotFoundError:
+        print("Configuration file not found. Please ensure 'config.json' exists.", file=sys.stderr)
+        sys.exit(1)  # Exit if config file not found
+    except json.JSONDecodeError as e:
+        print(f"Error decoding JSON configuration: {e}", file=sys.stderr)
+        sys.exit(1)  # Exit if JSON decode error
+    except KeyError as e:
+        print(f"Missing key in configuration: {e}", file=sys.stderr)
+        sys.exit(1)  # Exit if key error in config
+    except ValueError as e:
+        print(f"Invalid value in configuration: {e}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error loading configuration or setting up logging: {e}", file=sys.stderr)
+        sys.exit(1)  # Exit if configuration or logging setup fails
+
     logger.info("Starting main process for RabbitMQ consumer.")  # Log main start
     connection = None  # Variable to store connection object
     while True:  # Loop to reconnect/consume messages again when an error occurs
