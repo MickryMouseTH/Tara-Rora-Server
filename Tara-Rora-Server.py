@@ -12,7 +12,7 @@ import base64                            # Import base64 for decoding payload da
 
 # ----------------------- Configuration Values -----------------------
 Program_Name = "Tara-Rora-Server"  # Declare the program name (used for display and log file naming)
-Program_Version = "1.1"          # Declare the program version (used in log file name)
+Program_Version = "1.2"          # Declare the program version (used in log file name)
 # ---------------------------------------------------------------------
 
 CPU_COUNT = os.cpu_count() or 1  # Check the number of CPU cores in the system (use 1 if unavailable)
@@ -492,7 +492,6 @@ def decode_hex_payload(hex_str):
     return result  # Return result dict
 
 global config  # Declare global config variable to be used in multiple functions
-config = None  # Initialize config variable
 
 def main():
     """
@@ -502,6 +501,7 @@ def main():
     - Contains a loop for automatic reconnection on error
     - Supports KeyboardInterrupt to stop the program
     """
+    global config
     try:
         config = Load_Config(default_config, Program_Name)  # Load configuration
         logger = Loguru_Logging(config, Program_Name, Program_Version)  # Set up logging
