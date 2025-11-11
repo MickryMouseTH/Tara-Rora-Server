@@ -28,12 +28,12 @@ from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 from typing import Any, Dict
 import mysql.connector
+import logging
 import uvicorn
 import secrets
 import base64
 import json
 import os
-import logging
 
 # ----------------------- Configuration Values -----------------------
 Program_Name = "Tara-Rora-Server"
