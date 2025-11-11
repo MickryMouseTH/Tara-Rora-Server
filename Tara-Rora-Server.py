@@ -22,6 +22,7 @@ Notes:
 
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi import FastAPI, Request, HTTPException, Depends
+from fastapi.concurrency import run_in_threadpool   # <-- เพิ่มตรงนี้
 from LogLibrary import Load_Config, Loguru_Logging
 from datetime import datetime, timedelta, timezone
 from fastapi.responses import JSONResponse
@@ -54,7 +55,8 @@ default_config = {
     "API_Listen": {
         # FastAPI/uvicorn bind host/port
         "host": "0.0.0.0",
-        "port": 8000
+        "port": 8000,
+        "workers": 1
     },
     "Auth": {
         # HTTP Basic auth credentials for /ingest endpoint
@@ -541,7 +543,8 @@ async def ingest(
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
     try:
-        result = process_message(body, config)
+        # รัน process_message ใน threadpool เพื่อให้รองรับ multi-thread
+        result = await run_in_threadpool(process_message, body, config)
         return JSONResponse(content=result)
     except Exception as e:
         logger.exception(f"Error decoding message: {e}")
@@ -560,5 +563,6 @@ if __name__ == "__main__":
         host=host,
         port=port,
         log_config=None,   # ให้ใช้ logging ปัจจุบัน (ที่ bridge ไป Loguru แล้ว)
-        access_log=True    # access log ก็จะเข้าที่ logger เหมือนกัน
+        access_log=True,    # access log ก็จะเข้าที่ logger เหมือนกัน
+        workers=API_Config.get("workers", 1)
     )
