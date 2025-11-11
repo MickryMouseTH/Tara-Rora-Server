@@ -22,7 +22,7 @@ Notes:
 
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi import FastAPI, Request, HTTPException, Depends
-from fastapi.concurrency import run_in_threadpool   # <-- เพิ่มตรงนี้
+from fastapi.concurrency import run_in_threadpool
 from LogLibrary import Load_Config, Loguru_Logging
 from datetime import datetime, timedelta, timezone
 from fastapi.responses import JSONResponse
@@ -38,7 +38,7 @@ import os
 
 # ----------------------- Configuration Values -----------------------
 Program_Name = "Tara-Rora-Server"
-Program_Version = "1.5"
+Program_Version = "1.6"
 
 # Default configuration used when no external config is present. The
 # Load_Config helper can merge/override these values from an external source
@@ -95,7 +95,7 @@ class LoguruHandler(logging.Handler):
         except Exception:
             level = "INFO"
 
-        # bind ชื่อ logger ของต้นทาง (uvicorn, fastapi ฯลฯ)
+        # Bind the originating logger name (uvicorn, fastapi, etc.) as extra context
         log = logger.bind(logger_name=record.name)
 
         log.opt(
@@ -103,10 +103,10 @@ class LoguruHandler(logging.Handler):
             exception=record.exc_info
         ).log(level, record.getMessage())
 
-# ใช้ LoguruHandler เป็น handler หลักสำหรับ logging มาตรฐาน
+# Use LoguruHandler as the primary handler for standard logging
 logging.basicConfig(handlers=[LoguruHandler()], level=0, force=True)
 
-# ผูก logger ของ uvicorn / fastapi ให้ใช้ LoguruHandler
+# Attach uvicorn/fastapi loggers to use LoguruHandler
 for name in ("uvicorn", "uvicorn.error", "uvicorn.access", "fastapi"):
     _log = logging.getLogger(name)
     _log.handlers = [LoguruHandler()]
@@ -121,7 +121,7 @@ def hex_to_bin(hex_str):
     return bin(int(hex_str, 16))[2:].zfill(len(hex_str) * 4)
 
 def hex_to_decimal(hex_str):
-    # ถ้าอยากได้ float จริง ๆ เปลี่ยนเป็น float(int(hex_str, 16))
+    # Utility: convert hex string to integer. (Use float(int(...)) only if a float is explicitly required.)
     """Convert a hex string to a decimal integer."""
     return int(hex_str, 16)
 
@@ -176,11 +176,11 @@ def decode_pulse3_keepalive(hex_payload: str) -> dict:
     if len(payload) < 11:
         raise ValueError("Payload too short for Pulse 3 keep-alive frame")
 
-    # Byte[1] contains multiple bit flags and a rolling frame counter (top 2 bits)
+    # Byte[1] contains multiple status flags and a rolling frame counter (top bits)
     status_byte = payload[1]
     frame_counter = (status_byte >> 6) & 0b00000111
 
-    # 3-byte big-endian integers for min/max
+    # 3-byte big-endian integers for channel A/B last 24h max/min. Channel B min not present in this frame type (set to 0).
     ch_a_max = int.from_bytes(payload[2:5], byteorder='big')
     ch_a_min = int.from_bytes(payload[5:8], byteorder='big')
     ch_b_max = int.from_bytes(payload[8:11], byteorder='big') if len(payload) >= 11 else 0
@@ -215,7 +215,7 @@ def decode_pulse3_keepalive(hex_payload: str) -> dict:
 def decode_hex_payload(hex_str: str) -> dict:
     """Decode a generic Adeunis-like 0x46 payload with two pulse counters.
 
-    For 10-byte payloads, interpret as:
+    For 10-byte payloads (only first 10 bytes used if longer), interpret as:
     - byte[0]   frame type
     - byte[1]   status (opaque here)
     - byte[2:6] channel-1 pulse counter (uint32 BE)
@@ -237,8 +237,10 @@ def decode_hex_payload(hex_str: str) -> dict:
 def InsertDB(DeviceID, DateTimeVal, MeterIndex, Pressure, Flowrate, FrameType, config):
     """Insert a measurement row into the `standarddb` table.
 
-    The query calculates `Consumption` as the delta between the incoming
-    `MeterIndex` and the latest stored `MeterIndex` per device.
+    The query calculates `Consumption` as the delta between the new `MeterIndex`
+    and the latest stored `MeterIndex` for the same device (subquery). This can
+    be affected by out-of-order arrivals; consider ordering/queuing if exact
+    monotonic deltas are required.
     """
     logger.info('Database Insert Start')
 
@@ -351,9 +353,9 @@ def process_message(clean_json: Dict[str, Any], config: dict) -> Dict[str, Any]:
 
     Steps:
     1) Extract and base64-decode `data` to a hex string.
-    2) Identify frame prefix to route to the correct decoder.
-    3) Optionally persist to DB if device is known.
-    4) Write the full message (with decoded section) to disk.
+    2) Identify frame prefix to select the correct decoder.
+    3) Optionally persist to DB if device exists (Adeunis / LR9 frames only).
+    4) Persist full enriched message (raw + decoded) to disk under a frame-specific folder (or Fail).
 
     Returns a small status dict suitable for HTTP responses.
     """
@@ -379,7 +381,7 @@ def process_message(clean_json: Dict[str, Any], config: dict) -> Dict[str, Any]:
     DeviceName = device_info.get('devEui') or device_info.get('deviceName')
 
     try:
-        # Normalize incoming timestamp to Asia/Bangkok (+07:00)
+    # Normalize incoming timestamp to Asia/Bangkok (+07:00) from nsTime; fallback to current time if parsing fails
         DateTimeVal = datetime.fromisoformat(clean_json['rxInfo'][0].get('nsTime')).astimezone(
             timezone(timedelta(hours=7))
         )
@@ -389,7 +391,7 @@ def process_message(clean_json: Dict[str, Any], config: dict) -> Dict[str, Any]:
     frame_prefix = payload_hex[0:2].lower()
 
     if frame_prefix == "46":
-        # Adeunis-like 0x46 frame: two channel counters
+    # Adeunis-like 0x46 frame: two channel counters (ch1/ch2). Saved under Adeunis or Fail.
         decoded_data = decode_hex_payload(payload_hex)
         clean_json['Data Decode'] = decoded_data
 
@@ -401,7 +403,7 @@ def process_message(clean_json: Dict[str, Any], config: dict) -> Dict[str, Any]:
             FrameType = payload_hex[0:2]
 
             try:
-                logger.info('Insert Database.....')
+                logger.info('Insert into database (Adeunis frame)')
                 InsertDB(DeviceName, DateTimeVal, MeterIndex, Pressure, Flowrate, FrameType, config)
                 output_dir = 'Sensor-Data/Adeunis'
                 os.makedirs(output_dir, exist_ok=True)
@@ -429,7 +431,7 @@ def process_message(clean_json: Dict[str, Any], config: dict) -> Dict[str, Any]:
         return {"status": "ok", "frame": "46"}
 
     elif frame_prefix == "9d":
-        # LR9 custom frame: alarms + meter index + factor
+    # LR9 custom frame: alarms + meter index + factor. Saved under LR9 or Fail.
         payload_lr9 = decode_LR9(payload_hex)
         clean_json['Data Decode'] = payload_lr9
 
@@ -441,7 +443,7 @@ def process_message(clean_json: Dict[str, Any], config: dict) -> Dict[str, Any]:
             FrameType = payload_hex[0:2]
 
             try:
-                logger.info('Insert Database.....')
+                logger.info('Insert into database (LR9 frame)')
                 InsertDB(DeviceName, DateTimeVal, MeterIndex, Pressure, Flowrate, FrameType, config)
                 output_dir = 'Sensor-Data/LR9'
                 os.makedirs(output_dir, exist_ok=True)
@@ -469,7 +471,7 @@ def process_message(clean_json: Dict[str, Any], config: dict) -> Dict[str, Any]:
         return {"status": "ok", "frame": "9d"}
 
     elif frame_prefix == "30":
-        # Pulse 3 keep-alive frame: store decoded snapshot to disk
+    # Pulse 3 keep-alive frame: snapshot only (no DB persistence). Always stored under keepalive.
         clean_json['Data Decode'] = decode_pulse3_keepalive(payload_hex)
         output_dir = 'Sensor-Data/keepalive'
         os.makedirs(output_dir, exist_ok=True)
@@ -520,13 +522,13 @@ def get_current_user(credentials: HTTPBasicCredentials = Depends(security)) -> s
         )
     return credentials.username
 
-# health ไม่ต้องล็อกอิน
+# Health endpoint does not require login
 @app.get("/health")
 def health():
     """Health probe endpoint (no auth required)."""
     return {"status": "ok", "service": Program_Name, "version": Program_Version}
 
-# ingest ต้องล็อกอิน
+# Ingestion endpoint requires login
 @app.post("/ingest")
 async def ingest(
     request: Request,
@@ -543,7 +545,7 @@ async def ingest(
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
     try:
-        # รัน process_message ใน threadpool เพื่อให้รองรับ multi-thread
+    # Offload to thread pool (DB I/O + file writes are blocking) so event loop remains responsive
         result = await run_in_threadpool(process_message, body, config)
         return JSONResponse(content=result)
     except Exception as e:
@@ -562,7 +564,7 @@ if __name__ == "__main__":
         app,
         host=host,
         port=port,
-        log_config=None,   # ให้ใช้ logging ปัจจุบัน (ที่ bridge ไป Loguru แล้ว)
-        access_log=True,    # access log ก็จะเข้าที่ logger เหมือนกัน
+        log_config=None,   # Use current logging config (already bridged to Loguru via custom handler)
+        access_log=True,    # Access logs routed through LoguruHandler
         workers=API_Config.get("workers", 1)
     )
