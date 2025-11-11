@@ -1,0 +1,51 @@
+คู่มือการตั้งค่า HTTP Integration บน ChirpStack
+
+1. เปิดหน้า HTTP Integration
+	1.	เข้าระบบ ChirpStack Web UI
+	2.	เมนูด้านซ้ายเลือก Applications
+	3.	เลือก Application ที่ต้องการส่งข้อมูลไปยัง HTTP
+	4.	เข้าแท็บ Integrations
+	5.	เลือกประเภท HTTP
+
+⸻
+
+2. ตั้งค่า Encoding และ URL ปลายทาง
+
+ในหน้าตั้งค่า HTTP:
+	1.	ช่อง Payload encoding
+	•	เลือก: JSON  (แนะนำ ใช้งานง่าย)
+	2.	ช่อง Event endpoint URL(s)
+	•	ใส่ URL ปลายทางของ server ที่จะรับข้อมูล เช่น
+	•	http://192.168.1.50:8090/chirpstack
+	•	หรือ https://api.mycompany.com/chirpstack
+	•	ใส่ได้หลาย URL โดยคั่นด้วยเครื่องหมาย , หากต้องการยิงไปหลายปลายทาง
+
+หมายเหตุ: ChirpStack จะยิง POST ไปที่ URL นี้ พร้อม query เช่น ?event=up, ?event=join อัตโนมัติ
+
+กด Save 1 ครั้งให้เรียบร้อย
+
+⸻
+
+3. ตั้งค่า Header สำหรับ Basic Auth (ถ้าใช้)
+
+ถ้าปลายทางใช้ Basic Auth:
+	1.	เตรียมค่า Base64 ของ username:password ด้วย echo -n 'username:password' | base64
+เช่น myuser:mypass → ได้ bXl1c2VyOm15cGFzcw==
+	2.	ในหน้าตั้งค่า HTTP Integration (ส่วน Headers):
+	•	กดเพิ่มแถวใหม่
+	•	Header name: Authorization
+	•	Header value: Basic bXl1c2VyOm15cGFzcw==
+	3.	กด Save
+
+⸻
+
+4. ตรวจสอบการทำงาน
+
+เมื่อตั้งค่าเสร็จ:
+	1.	ให้ device ส่ง uplink ตามปกติ
+	2.	ในหน้า Device → Events / LoRaWAN frames ตรวจว่ามี uplink เข้า
+	3.	ที่ฝั่งปลายทาง (HTTP server) ตรวจ log ว่ามี Request เข้ามาจาก ChirpStack หรือไม่
+	•	URL จะเป็นประมาณ:
+.../chirpstack?event=up
+	•	Method: POST
+	•	Body: JSON (ตามที่เลือก encoding)
