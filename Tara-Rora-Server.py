@@ -1,23 +1,21 @@
-from datetime import datetime, timedelta, timezone
-import mysql.connector
-from loguru import logger
-import json
-import sys
-import os
-import base64
-from typing import Any, Dict
-
-from fastapi import FastAPI, Request, HTTPException, Depends
-from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-import secrets
-
-# NEW: lifespan
+from fastapi import FastAPI, Request, HTTPException, Depends
+from LogLibrary import Load_Config, Loguru_Logging
+from datetime import datetime, timedelta, timezone
+from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
+from typing import Any, Dict
+import mysql.connector
+import uvicorn
+import secrets
+import base64
+import json
+import os
+import logging
 
 # ----------------------- Configuration Values -----------------------
 Program_Name = "Tara-Rora-Server"
-Program_Version = "1.3"
+Program_Version = "1.5"
 
 default_config = {
     "DB_config": {
@@ -36,69 +34,51 @@ default_config = {
         "password": "aurten@2025"
     },
     "log_Level": "DEBUG",
-    "Log_Console_Enable": 1,
+    "Log_Console": 1,
     "log_Backup": 90,
     "Log_Size": "10 MB"
 }
 
-# ----------------------- Load Configuration -----------------------
-def Load_Config(default_config: dict, Program_Name: str) -> dict:
-    config_file_path = f'{Program_Name}.config.json'
-    if not os.path.exists(config_file_path):
-        with open(config_file_path, 'w') as new_config_file:
-            json.dump(default_config, new_config_file, indent=4)
-    with open(config_file_path, 'r') as config_file:
-        config = json.load(config_file)
-    return config
+# ---------------------------------------------------------------------
+# โหลด config + logger แค่ครั้งเดียว
+config = Load_Config(default_config, Program_Name)
+logger = Loguru_Logging(config, Program_Name, Program_Version)
 
-# ----------------------- Loguru Logging Setup -----------------------
-def Loguru_Logging(config: dict, Program_Name: str, Program_Version: str):
-    logger.remove()
+# ----------------------- Bridge: Python logging -> Loguru -----------------------
+class LoguruHandler(logging.Handler):
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            level = record.levelname
+        except Exception:
+            level = "INFO"
 
-    log_Backup = int(config.get('log_Backup', 90))
-    if log_Backup < 1:
-        log_Backup = 1
-    Log_Size = config.get('Log_Size', '10 MB')
-    log_Level = config.get('log_Level', 'DEBUG').upper()
+        # bind ชื่อ logger ของต้นทาง (uvicorn, fastapi ฯลฯ)
+        log = logger.bind(logger_name=record.name)
 
-    log_dir = "logs"
-    os.makedirs(log_dir, exist_ok=True)
+        log.opt(
+            depth=6,
+            exception=record.exc_info
+        ).log(level, record.getMessage())
 
-    log_file_name = f'{Program_Name}_{Program_Version}.log'
-    log_file = os.path.join(log_dir, log_file_name)
+# ใช้ LoguruHandler เป็น handler หลักสำหรับ logging มาตรฐาน
+logging.basicConfig(handlers=[LoguruHandler()], level=0, force=True)
 
-    if config.get('Log_Console_Enable', 0) == 1:
-        logger.add(
-            sys.stdout,
-            level=log_Level,
-            format="<green>{time}</green> | <blue>{level}</blue> | <cyan>{thread.id}</cyan> | <magenta>{function}</magenta> | {message}"
-        )
-
-    logger.add(
-        log_file,
-        format="{time} | {level} | {thread.id} | {function} | {message}",
-        level=log_Level,
-        rotation=Log_Size,
-        retention=log_Backup,
-        compression="zip"
-    )
-
-    logger.info('-' * 117)
-    logger.info(f"Start {Program_Name} Version {Program_Version}")
-    logger.info('-' * 117)
-
-    return logger
+# ผูก logger ของ uvicorn / fastapi ให้ใช้ LoguruHandler
+for name in ("uvicorn", "uvicorn.error", "uvicorn.access", "fastapi"):
+    _log = logging.getLogger(name)
+    _log.handlers = [LoguruHandler()]
+    _log.propagate = False
 
 # ----------------------- Helpers / Decoders -----------------------
 def hex_to_bin(hex_str):
     return bin(int(hex_str, 16))[2:].zfill(len(hex_str) * 4)
 
 def hex_to_decimal(hex_str):
+    # ถ้าอยากได้ float จริง ๆ เปลี่ยนเป็น float(int(hex_str, 16))
     return int(hex_str, 16)
 
 def decode_LR9(hex_payload: str) -> dict:
     logger.debug(f'Decode_LR9 HEX : {hex_payload}')
-    result = {}
     FrameType = hex_payload[0:2]
     UnitId = hex_payload[2:4]
     Alarm = hex_to_bin(hex_payload[4:8])
@@ -106,17 +86,19 @@ def decode_LR9(hex_payload: str) -> dict:
     MeterIndex = hex_to_decimal(hex_payload[12:20])
     Factor = hex_to_decimal(hex_payload[20:22])
 
-    result["LR9_Decode"] = [
-        {
-            "Hex": hex_payload,
-            "FrameType": FrameType,
-            "UnitID": UnitId,
-            "Alarm": Alarm,
-            "ExtendAlarm": ExtendAlarm,
-            "MeterIndex": MeterIndex,
-            "Factor": Factor
-        }
-    ]
+    result = {
+        "LR9_Decode": [
+            {
+                "Hex": hex_payload,
+                "FrameType": FrameType,
+                "UnitID": UnitId,
+                "Alarm": Alarm,
+                "ExtendAlarm": ExtendAlarm,
+                "MeterIndex": MeterIndex,
+                "Factor": Factor
+            }
+        ]
+    }
     logger.debug(f'Return : {result}')
     return result
 
@@ -125,40 +107,38 @@ def decode_pulse3_keepalive(hex_payload: str) -> dict:
     if len(payload) < 11:
         raise ValueError("Payload too short for Pulse 3 keep-alive frame")
 
-    result = {}
-    frame_type = payload[0]  # parsed but not used
-    result["HEX"] = hex_payload
-
     status_byte = payload[1]
     frame_counter = (status_byte >> 6) & 0b00000111
-
-    result["status"] = {
-        "frameCounter": frame_counter,
-        "hardwareError": bool(status_byte & 0b00010000),
-        "lowBattery": bool(status_byte & 0b00001000),
-        "configurationDone": bool(status_byte & 0b00000100),
-        "configurationInconsistency": bool(status_byte & 0b00000010)
-    }
 
     ch_a_max = int.from_bytes(payload[2:5], byteorder='big')
     ch_a_min = int.from_bytes(payload[5:8], byteorder='big')
     ch_b_max = int.from_bytes(payload[8:11], byteorder='big') if len(payload) >= 11 else 0
     ch_b_min = 0
 
-    result["channels"] = [
-        {
-            "name": "channel A",
-            "flow": {"alarm": False, "last24hMin": ch_a_min, "last24hMax": ch_a_max},
-            "tamperAlarm": False,
-            "leakageAlarm": False
+    result = {
+        "HEX": hex_payload,
+        "status": {
+            "frameCounter": frame_counter,
+            "hardwareError": bool(status_byte & 0b00010000),
+            "lowBattery": bool(status_byte & 0b00001000),
+            "configurationDone": bool(status_byte & 0b00000100),
+            "configurationInconsistency": bool(status_byte & 0b00000010)
         },
-        {
-            "name": "channel B",
-            "flow": {"alarm": False, "last24hMin": ch_b_min, "last24hMax": ch_b_max},
-            "tamperAlarm": False,
-            "leakageAlarm": False
-        }
-    ]
+        "channels": [
+            {
+                "name": "channel A",
+                "flow": {"alarm": False, "last24hMin": ch_a_min, "last24hMax": ch_a_max},
+                "tamperAlarm": False,
+                "leakageAlarm": False
+            },
+            {
+                "name": "channel B",
+                "flow": {"alarm": False, "last24hMin": ch_b_min, "last24hMax": ch_b_max},
+                "tamperAlarm": False,
+                "leakageAlarm": False
+            }
+        ]
+    }
     return result
 
 def decode_hex_payload(hex_str: str) -> dict:
@@ -397,19 +377,13 @@ def process_message(clean_json: Dict[str, Any], config: dict) -> Dict[str, Any]:
         return {"status": "ok", "note": "unknown frame prefix", "prefix": frame_prefix}
 
 # ----------------------- FastAPI App + lifespan -----------------------
-config: dict = {}
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global config
+    logger.info("Application startup.")
     try:
-        config = Load_Config(default_config, Program_Name)
-        Loguru_Logging(config, Program_Name, Program_Version)
-        logger.info("Configuration loaded successfully.")
         yield
     finally:
-        # place for graceful shutdown if needed
-        pass
+        logger.info("Application shutdown.")
 
 app = FastAPI(title=Program_Name, version=Program_Version, lifespan=lifespan)
 
@@ -433,7 +407,6 @@ def get_current_user(credentials: HTTPBasicCredentials = Depends(security)) -> s
             headers={"WWW-Authenticate": "Basic"},
         )
     return credentials.username
-# --------------------------------------
 
 # health ไม่ต้องล็อกอิน
 @app.get("/health")
@@ -458,18 +431,18 @@ async def ingest(
         logger.exception(f"Error decoding message: {e}")
         raise HTTPException(status_code=422, detail=str(e))
 
-# ----------------------- Local dev entry -----------------------
+# ----------------------- Local dev / exe entry -----------------------
 if __name__ == "__main__":
-    import uvicorn
-    # อ่าน host/port จากไฟล์คอนฟิก โดยไม่แตะ log (กันกรณียังไม่ init logger)
-    try:
-        cfg_for_run = Load_Config(default_config, Program_Name)
-    except Exception:
-        cfg_for_run = default_config
+    API_Config = config.get("API_Listen", {})
+    host = API_Config.get("host", "0.0.0.0")
+    port = API_Config.get("port", 8000)
 
-    host = (cfg_for_run.get("API_Listen") or {}).get("host", "0.0.0.0")
-    port = (cfg_for_run.get("API_Listen") or {}).get("port", 8000)
+    logger.info(f"Starting {Program_Name} (Uvicorn) on http://{host}:{port}")
 
-    # เมื่อรันเป็นสคริปต์: ห้ามใช้ reload=True (จะเกิดคำเตือน)
-    uvicorn.run(app, host=host, port=port)  # no reload
-# ----------------------- End of File -----------------------
+    uvicorn.run(
+        app,
+        host=host,
+        port=port,
+        log_config=None,   # ให้ใช้ logging ปัจจุบัน (ที่ bridge ไป Loguru แล้ว)
+        access_log=True    # access log ก็จะเข้าที่ logger เหมือนกัน
+    )
