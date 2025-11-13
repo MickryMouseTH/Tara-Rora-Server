@@ -1,3 +1,31 @@
+"""
+Lightweight logging helper utilities for applications that want:
+- A simple JSON-backed configuration file auto-created on first run
+- Loguru-based logging to console and rotating file
+- A startup banner rendered with pyfiglet (optional eye-candy)
+
+Usage (quick start):
+        from LogLibrary import Load_Config, Loguru_Logging
+
+        Program_Name = "MyApp"
+        Program_Version = "1.0"
+
+        default_config = {
+                "log_Level": "DEBUG",
+                "Log_Console": 1,
+                "log_Backup": 90,
+                "Log_Size": "10 MB"
+        }
+
+        config = Load_Config(default_config, Program_Name)
+        logger = Loguru_Logging(config, Program_Name, Program_Version)
+
+Notes:
+- The config file is created in the same directory as this module or the
+    executable (when frozen). The file is named `<Program_Name>_config.json`.
+- File rotation and retention are driven by config values.
+"""
+
 from loguru import logger
 import json
 import sys
@@ -44,17 +72,35 @@ logger = Loguru_Logging(config, Program_Name, Program_Version)
 global script_dir
 
 if getattr(sys, 'frozen', False):
+    # When packaged into a single executable (e.g., PyInstaller), place files
+    # next to the executable to keep configuration and logs with the binary.
     script_dir = os.path.dirname(sys.executable)
 else:
+    # When running as a normal script, co-locate config/logs with this module.
     script_dir = os.path.dirname(os.path.abspath(__file__))
 
-def Load_Config(default_config,Program_Name):
+def Load_Config(default_config, Program_Name):
+    """Load or create a JSON config for the application.
+
+    Behavior:
+    - If `<Program_Name>_config.json` does not exist, create it with
+      `default_config` and write to disk (pretty-printed).
+    - Read and return the config as a Python dictionary.
+
+    Args:
+        default_config: A dict with default settings to seed the file.
+        Program_Name: The app name used to derive the config filename.
+
+    Returns:
+        dict: Parsed configuration content.
+    """
     # Define the configuration file path.
     config_file_name = f'{Program_Name}_config.json'
     config_path = os.path.join(script_dir, config_file_name)
 
     # Create config file with default values if it does not exist.
     if not os.path.exists(config_path):
+        # Persist defaults so operators can edit them later.
         default_config = default_config 
         with open(config_path, 'w') as new_config_file:
             json.dump(default_config, new_config_file, indent=4)
@@ -66,7 +112,22 @@ def Load_Config(default_config,Program_Name):
     return config
 
 # ----------------------- Loguru Logging Setup -----------------------
-def Loguru_Logging(config,Program_Name,Program_Version):
+def Loguru_Logging(config, Program_Name, Program_Version):
+    """Initialize Loguru sinks per configuration.
+
+    Sinks:
+    - Console (optional): enabled when `Log_Console` is truthy.
+    - File: `<script_dir>/logs/<Program_Name>_<Program_Version>.log` with
+      size-based rotation and day-based retention.
+
+    Args:
+        config: The configuration dict returned by `Load_Config`.
+        Program_Name: Application name (used in file naming and banner).
+        Program_Version: Application version (used in file naming and banner).
+
+    Returns:
+        loguru.Logger: Configured logger instance ready for use.
+    """
     logger.remove()
 
     log_Backup = int(config.get('log_Backup', 90))

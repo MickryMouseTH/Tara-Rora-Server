@@ -38,7 +38,7 @@ import os
 
 # ----------------------- Configuration Values -----------------------
 Program_Name = "Tara-Rora-Server"
-Program_Version = "1.6"
+Program_Version = "1.7"
 
 # Default configuration used when no external config is present. The
 # Load_Config helper can merge/override these values from an external source
@@ -74,6 +74,47 @@ default_config = {
 # Load configuration and initialize Loguru logger once at module import time
 config = Load_Config(default_config, Program_Name)
 logger = Loguru_Logging(config, Program_Name, Program_Version)
+
+# Mapping จากไฟล์ Excel: Status A Common Alarms
+# ===== LR9 Alarm mappings =====
+# Default mapping (ใช้ตรงตาม Excel เผื่อกรณี config ภายนอกไม่มี key นี้)
+ALARM_BITS_DEFAULT_LR9 = {
+    0:  "Tamper",
+    1:  "PUS Failure (Cut Wire)",
+    2:  "Backflow (CCW)",
+    3:  "Leak",
+    4:  "Poor RF",
+    5:  "Low Battery",
+    6:  "Field prog",
+    7:  "System",
+    8:  "Low temperature",
+    9:  "Tilt",
+    10: "Qmax",
+    11: "Burst Pipe",
+    12: "Empty Pipe",
+    13: "Sensus Low Battery",
+    14: "Sensus Invalid Read",
+    15: "Reserved",
+}
+
+EXT_ALARM_BITS_DEFAULT_LR9 = {
+    0: "Reset Watch Dog (WD)",
+    1: "HW Reset",
+    2: "Reset On Power (POR)",
+    3: "HW Failure",
+    4: "Box switch Open",
+    5: "Charging Failure",
+    6: "Power monitor Failure",
+    7: "Low Pressure (LP)",
+    8: "High Pressure (HP)",
+    9:  "Reserved",
+    10: "Reserved",
+    11: "Reserved",
+    12: "Reserved",
+    13: "Reserved",
+    14: "Reserved",
+    15: "Reserved",
+}
 
 # ----------------------- Bridge: Python logging -> Loguru -----------------------
 class LoguruHandler(logging.Handler):
@@ -120,10 +161,42 @@ def hex_to_bin(hex_str):
     """
     return bin(int(hex_str, 16))[2:].zfill(len(hex_str) * 4)
 
+
 def hex_to_decimal(hex_str):
-    # Utility: convert hex string to integer. (Use float(int(...)) only if a float is explicitly required.)
     """Convert a hex string to a decimal integer."""
     return int(hex_str, 16)
+
+
+def decode_alarm_bits(hex_alarm: str, mapping: dict = None):
+    """Expand a 4-hex-digit (16-bit) alarm field into details.
+
+    mapping: dict ของ bit -> ชื่อ alarm (ถ้าไม่ส่ง จะใช้ ALARM_BITS)
+
+    Returns:
+    - bits: dict ของ per-bit details (index, value, human-readable name, active flag)
+    - active: list ของ human-readable alarm names ที่ถูก set (value == 1)
+    """
+    if mapping is None:
+        mapping = ALARM_BITS
+
+    value = int(hex_alarm, 16)
+    bits = {}
+    active = []
+
+    for bit in range(16):
+        bit_val = (value >> bit) & 0x01
+        name = mapping.get(bit, f"Bit{bit}")
+        bits[bit] = {
+            "bit": bit,
+            "value": bit_val,
+            "name": name,
+            "active": bool(bit_val),
+        }
+        if bit_val and name:
+            active.append(name)
+
+    return bits, active
+
 
 def decode_LR9(hex_payload: str) -> dict:
     """Decode an LR9 custom frame (prefix 0x9d).
@@ -131,35 +204,61 @@ def decode_LR9(hex_payload: str) -> dict:
     Expected layout (by nibble/byte indexes in the hex string):
     - 0:2   FrameType
     - 2:4   UnitId
-    - 4:8   Alarm (16 bits as binary string)
-    - 8:12  ExtendAlarm (16 bits as binary string)
+    - 4:8   Alarm (16 bits)
+    - 8:12  ExtendAlarm (16 bits)
     - 12:20 MeterIndex (32-bit integer)
     - 20:22 Factor (8-bit integer)
 
-    Returns a dict with a "LR9_Decode" list for consistency and potential
-    future multi-frame support.
+    Returns a dict with a "LR9_Decode" list.
     """
     logger.debug(f'Decode_LR9 HEX : {hex_payload}')
+
     FrameType = hex_payload[0:2]
     UnitId = hex_payload[2:4]
-    Alarm = hex_to_bin(hex_payload[4:8])
-    ExtendAlarm = hex_to_bin(hex_payload[8:12])
+
+    alarm_hex = hex_payload[4:8]
+    extend_alarm_hex = hex_payload[8:12]
+
+    Alarm = hex_to_bin(alarm_hex)
+    ExtendAlarm = hex_to_bin(extend_alarm_hex)
+
     MeterIndex = hex_to_decimal(hex_payload[12:20])
     Factor = hex_to_decimal(hex_payload[20:22])
+
+
+    # ใช้ mapping ตามไฟล์ Excel
+    alarm_bits, alarm_active = decode_alarm_bits(alarm_hex, ALARM_BITS_DEFAULT_LR9)
+    ext_alarm_bits, ext_alarm_active = decode_alarm_bits(extend_alarm_hex, EXT_ALARM_BITS_DEFAULT_LR9)
 
     result = {
         "LR9_Decode": [
             {
                 "Hex": hex_payload,
+
                 "FrameType": FrameType,
                 "UnitID": UnitId,
-                "Alarm": Alarm,
-                "ExtendAlarm": ExtendAlarm,
+
+                # ค่าเดิม
+                "Alarm": Alarm,                     # binary string 16-bit
+                "ExtendAlarm": ExtendAlarm,         # binary string 16-bit
                 "MeterIndex": MeterIndex,
-                "Factor": Factor
+                "Factor": Factor,
+
+                # เพิ่มเติมตามสเปกจากไฟล์
+                "AlarmHex": alarm_hex,
+                "ExtendAlarmHex": extend_alarm_hex,
+
+                "AlarmBits": alarm_bits,
+                "AlarmActiveList": alarm_active,
+
+                "ExtendAlarmBits": ext_alarm_bits,
+                "ExtendAlarmActiveList": ext_alarm_active,
+                
+                "DataSize": len(hex_payload) // 2,  # มีใน Excel (11)
             }
         ]
     }
+
     logger.debug(f'Return : {result}')
     return result
 
