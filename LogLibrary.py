@@ -1,54 +1,10 @@
-"""
-Lightweight logging helper utilities for applications that want:
-- A simple JSON-backed configuration file auto-created on first run
-- Loguru-based logging to console and rotating file
-- A startup banner rendered with pyfiglet (optional eye-candy)
-
-Usage (quick start):
-        from LogLibrary import Load_Config, Loguru_Logging
-
-        Program_Name = "MyApp"
-        Program_Version = "1.0"
-
-        default_config = {
-                "log_Level": "DEBUG",
-                "Log_Console": 1,
-                "log_Backup": 90,
-                "Log_Size": "10 MB"
-        }
-
-        config = Load_Config(default_config, Program_Name)
-        logger = Loguru_Logging(config, Program_Name, Program_Version)
-
-Notes:
-- The config file is created in the same directory as this module or the
-    executable (when frozen). The file is named `<Program_Name>_config.json`.
-- File rotation and retention are driven by config values.
-"""
-
 from loguru import logger
 import json
 import sys
 import os
-from pyfiglet import Figlet
-
-color_fig = Figlet(font='slant')
 
 '''
-# To use the Log Library, first import the necessary functions:
-# 'Load_Config' for loading configuration settings.
-# 'Loguru_Logging' for initializing the logger.
-from LogLibrary import Load_Config, Loguru_Logging
-
-# To call the functions and set up your logger:
-# 1. Load your default configuration. This sets up how your logs will behave (e.g., where they're saved, log level).
-config = Load_Config(default_config)
-# 2. Initialize the logger with your configuration, program name, and version.
-#    This makes the logger ready to record messages for your specific application.
-logger = Loguru_Logging(config, Program_Name, Program_Version)
-
-# To use default config minimum
-
+To use default config minimum, copy the following code snippet into your main program.
 ----------------------------------------------------------------------------------------------------------------------------------------
 
 from LogLibrary import Load_Config, Loguru_Logging
@@ -156,7 +112,8 @@ def Loguru_Logging(config, Program_Name, Program_Version):
         compression="zip"
     )
 
-    banner = color_fig.renderText(f"Start {Program_Name} Version {Program_Version}")
-    logger.info("\n" + banner)
+    logger.info('-' * 117)
+    logger.info(f"Start {Program_Name} Version {Program_Version}")
+    logger.info('-' * 117)
 
     return logger
